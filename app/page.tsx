@@ -1,86 +1,132 @@
 'use client';
+import { useState, useRef } from 'react';
 
-import { useRef, useState } from 'react';
-
-type Intent = {
-  mood?: string; tempo?: number; key?: string;
-  instruments?: string[]; energy?: string; persona?: string;
-  structureHint?: string; prompt?: string;
-};
-
-export default function Page(){
-  const [recording, setRecording] = useState(false);
+export default function Home() {
   const [transcript, setTranscript] = useState('');
-  const [intent, setIntent] = useState<Intent | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [intentJson, setIntentJson] = useState<any>(null);
+  const [audioUrl, setAudioUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  async function startRecording(){
+  // 🎙 Start/stop recording audio
+  const handleRecord = async () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      return;
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream);
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+
     chunksRef.current = [];
-    mr.ondataavailable = (e) => chunksRef.current.push(e.data);
-    mr.onstop = async () => {
+    mediaRecorder.ondataavailable = (event) => chunksRef.current.push(event.data);
+
+    mediaRecorder.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-      await handleAudio(blob);
+      await handleUpload(blob);
     };
-    mediaRecorderRef.current = mr;
-    mr.start();
-    setRecording(true);
-  }
-  function stopRecording(){ mediaRecorderRef.current?.stop(); setRecording(false); }
 
-  async function handleAudio(blob: Blob){
+    mediaRecorder.start();
+  };
+
+  // 🧠 Send audio to /api/transcribe
+  const handleUpload = async (blob: Blob) => {
     setLoading(true);
-    try{
-      const form = new FormData();
-      form.append('file', blob, 'speech.webm');
-      const tRes = await fetch('/api/transcribe', { method:'POST', body: form });
-      const tJson = await tRes.json();
-      setTranscript(tJson.text || '');
+    setTranscript('');
+    setIntentJson(null);
+    setAudioUrl('');
 
-      const iRes = await fetch('/api/intent', {
-        method:'POST', headers:{ 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: tJson.text, persona: 'Lyra' })
-      });
-      const iJson = await iRes.json();
-      setIntent(iJson.intent);
+    const formData = new FormData();
+    formData.append('file', blob, 'audio.webm');
 
-      const gRes = await fetch('/api/generate', {
-        method:'POST', headers:{ 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intent: iJson.intent, seconds: 12 })
-      });
-      const gJson = await gRes.json();
-      setAudioUrl(gJson.audioUrl || null);
-    } finally { setLoading(false); }
-  }
+    const tRes = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: formData
+    });
+
+    const tData = await tRes.json();
+    console.log('Transcribe response:', tData);
+    const text = tData.text || '';
+    setTranscript(text);
+
+    // 🧩 Send transcript to intent parser
+    const iRes = await fetch('/api/intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+
+    const iData = await iRes.json();
+    console.log('Intent response:', iData);
+    setIntentJson(iData);
+
+    // 🎵 Generate music
+    const gRes = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent: iData, seconds: 12 })
+    });
+
+    const gData = await gRes.json();
+    console.log('Generate response:', gData);
+    if (gData.audioUrl) setAudioUrl(gData.audioUrl);
+
+    setLoading(false);
+  };
 
   return (
-    <main style={{ padding:'24px', maxWidth:920, margin:'0 auto' }}>
-      <h1 style={{ fontSize:36, lineHeight:1.1 }}>MuseTalk</h1>
-      <p>Describe a vibe, and we’ll turn it into sound.</p>
-      <div style={{ display:'flex', gap:12 }}>
-        {!recording ? (
-          <button onClick={startRecording}>● Record</button>
-        ) : (
-          <button onClick={stopRecording}>■ Stop</button>
+    <main style={{
+      fontFamily: 'system-ui, sans-serif',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minHeight: '100vh',
+      padding: '2rem'
+    }}>
+      <h1 style={{ fontSize: '2rem', fontWeight: 'bold' }}>MuseTalk</h1>
+      <p style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>
+        Describe a vibe, and we’ll turn it into sound.
+      </p>
+
+      <button
+        onClick={handleRecord}
+        disabled={loading}
+        style={{
+          border: '2px solid black',
+          background: loading ? '#ccc' : 'white',
+          padding: '0.5rem 1rem',
+          borderRadius: '8px',
+          cursor: 'pointer'
+        }}
+      >
+        {mediaRecorderRef.current?.state === 'recording' ? 'Stop' : '● Record'}
+      </button>
+
+      <div style={{ marginTop: '2rem', width: '100%', maxWidth: '600px' }}>
+        <h3>Transcript:</h3>
+        <p>{transcript || '—'}</p>
+
+        <h3>Intent JSON:</h3>
+        <pre style={{
+          background: '#f7f7f7',
+          padding: '1rem',
+          borderRadius: '8px',
+          overflowX: 'auto'
+        }}>
+          {intentJson ? JSON.stringify(intentJson, null, 2) : '{}'}
+        </pre>
+
+        {loading && <p>⏳ Generating...</p>}
+
+        {audioUrl && (
+          <div style={{ marginTop: '1rem' }}>
+            <audio controls src={audioUrl} />
+          </div>
         )}
       </div>
-      <div style={{ marginTop:20 }}>
-        <strong>Transcript:</strong> {transcript || '—'}
-      </div>
-      <div style={{ marginTop:10 }}>
-        <strong>Intent JSON:</strong>
-        <pre>{JSON.stringify(intent, null, 2) || '—'}</pre>
-      </div>
-      {audioUrl && (
-        <div style={{ marginTop:20 }}>
-          <strong>Audio:</strong>
-          <audio controls src={audioUrl} />
-        </div>
-      )}
     </main>
   );
 }
